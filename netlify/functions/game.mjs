@@ -4,9 +4,9 @@ import { randomInt, randomUUID } from "node:crypto";
 const store = getStore("math-duel-rooms");
 
 const LEVELS = {
-  warmup: { seconds: 60 },
-  grade3: { seconds: 45 },
-  stretch: { seconds: 30 }
+  warmup: { seconds: 20 },
+  grade3: { seconds: 10 },
+  stretch: { seconds: 10 }
 };
 
 function response(data, status = 200) {
