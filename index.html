@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Math Duel</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #eef3ff;
+      color: #202943;
+      font-family: Arial, sans-serif;
+    }
+    main {
+      width: min(480px, 92%);
+      padding: 24px;
+      background: white;
+      border-radius: 18px;
+      box-shadow: 0 8px 30px #0002;
+    }
+    h1, .center { text-align: center; }
+    input, button {
+      box-sizing: border-box;
+      padding: 12px;
+      border-radius: 10px;
+      font: inherit;
+    }
+    input { border: 1px solid #bbc4d8; }
+    button {
+      margin: 4px;
+      border: 0;
+      background: #4d5fe8;
+      color: white;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:disabled { opacity: .5; cursor: default; }
+    .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    .scores { display: flex; justify-content: space-around; margin: 20px 0; }
+    .score { padding: 12px; border-radius: 12px; background: #f1f3fa; }
+    #question { margin: 24px 0; font-size: 2.8rem; font-weight: bold; }
+    #answer { width: 140px; text-align: center; font-size: 1.3rem; }
+    #status, #result { min-height: 28px; text-align: center; }
+    #status.error { color: #b42318; }
+    #game { display: none; }
+    #roomLabel { font-weight: bold; letter-spacing: 2px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Math Duel</h1>
+
+  <section id="lobby">
+    <p class="center">Play the same question on two devices.</p>
+    <p class="center">Your name: <input id="name" maxlength="16" value="Player"></p>
+    <div class="row">
+      <button id="create">Create a game</button>
+    </div>
+    <p class="center">Or join a game:</p>
+    <div class="row">
+      <input id="joinCode" maxlength="6" placeholder="ROOM CODE">
+      <button id="join">Join</button>
+    </div>
+    <p id="lobbyStatus" class="center">First player to 5 points wins.</p>
+  </section>
+
+  <section id="game">
+    <p class="center">Room code: <span id="roomLabel"></span></p>
+    <div class="scores">
+      <div class="score"><span id="p1name"></span>: <strong id="p1score">0</strong></div>
+      <div class="score"><span id="p2name"></span>: <strong id="p2score">0</strong></div>
+    </div>
+    <p id="roundLabel" class="center"></p>
+    <div id="question" class="center">Waiting…</div>
+    <div class="row">
+      <input id="answer" type="number" placeholder="Answer" disabled>
+      <button id="submit" disabled>Submit</button>
+    </div>
+    <p id="gameStatus" class="center"></p>
+    <p id="result" class="center"></p>
+    <div class="row">
+      <button id="nextRound" hidden>Next question</button>
+      <button id="playAgain" hidden>Play again</button>
+    </div>
+  </section>
+</main>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const API = "/.netlify/functions/game";
+
+  let roomCode = "";
+  let token = "";
+  let role = "";
+  let pollId = null;
+  let busy = false;
+
+  async function callApi(action, extra = {}) {
+    const response = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, code: roomCode, token, role, ...extra })
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+    return data;
+  }
+
+  function showLobbyError(error) {
+    $("lobbyStatus").textContent = error.message;
+    $("lobbyStatus").classList.add("error");
+  }
+
+  function nameValue(fallback) {
+    return $("name").value.trim() || fallback;
+  }
+
+  async function createGame() {
+    try {
+      $("lobbyStatus").textContent = "Creating room…";
+      const data = await callApi("create", { name: nameValue("Player 1") });
+      enterRoom(data);
+    } catch (error) {
+      showLobbyError(error);
+    }
+  }
+
+  async function joinGame() {
+    try {
+      $("lobbyStatus").textContent = "Joining room…";
+      const data = await callApi("join", {
+        code: $("joinCode").value.trim().toUpperCase(),
+        name: nameValue("Player 2")
+      });
+      enterRoom(data);
+    } catch (error) {
+      showLobbyError(error);
+    }
+  }
+
+  function enterRoom(data) {
+    roomCode = data.code;
+    token = data.token;
+    role = data.role;
+
+    $("lobby").style.display = "none";
+    $("game").style.display = "block";
+    $("roomLabel").textContent = roomCode;
+
+    refresh();
+    pollId = setInterval(refresh, 1500);
+  }
+
+  async function refresh() {
+    if (busy || !roomCode) return;
+    try {
+      const state = await callApi("state");
+      render(state);
+    } catch (error) {
+      $("gameStatus").textContent = error.message;
+    }
+  }
+
+  function render(state) {
+    $("p1name").textContent = state.players.p1 || "Player 1";
+    $("p2name").textContent = state.players.p2 || "Waiting";
+    $("p1score").textContent = state.displayScores.p1;
+    $("p2score").textContent = state.displayScores.p2;
+    $("roundLabel").textContent = state.round ? `Question ${state.roundNumber}` : "";
+    $("question").textContent = state.round?.text || "Waiting for Player 2…";
+
+    $("nextRound").hidden = true;
+    $("playAgain").hidden = true;
+    $("result").textContent = "";
+
+    if (state.state === "waiting") {
+      $("gameStatus").textContent = "Share the room code with Player 2.";
+      $("answer").disabled = true;
+      $("submit").disabled = true;
+      return;
+    }
+
+    if (state.roundResult) {
+      $("result").textContent =
+        `Answer: ${state.round.answer}. ` +
+        `${state.players.p1}: ${state.roundResult.p1Correct ? "correct" : "not quite"}; ` +
+        `${state.players.p2}: ${state.roundResult.p2Correct ? "correct" : "not quite"}.`;
+      $("answer").disabled = true;
+      $("submit").disabled = true;
+
+      if (state.state === "finished") {
+        const winner = state.scores.p1 === state.scores.p2
+          ? "It's a tie!"
+          : state.scores.p1 > state.scores.p2
+            ? `${state.players.p1} wins!`
+            : `${state.players.p2} wins!`;
+        $("gameStatus").textContent = winner;
+        if (role === "p1") $("playAgain").hidden = false;
+      } else {
+        $("gameStatus").textContent = "Both players have answered.";
+        if (role === "p1") $("nextRound").hidden = false;
+      }
+      return;
+    }
+
+    const submitted = state.submitted;
+    $("answer").disabled = submitted;
+    $("submit").disabled = submitted;
+    $("gameStatus").textContent = submitted
+      ? "Answer submitted. Waiting for the other player…"
+      : "Enter your answer.";
+  }
+
+  async function submitAnswer() {
+    if ($("answer").value.trim() === "") {
+      $("gameStatus").textContent = "Type an answer first.";
+      return;
+    }
+
+    busy = true;
+    $("submit").disabled = true;
+
+    try {
+      await callApi("submit", { answer: Number($("answer").value) });
+      $("answer").value = "";
+      await refresh();
+    } catch (error) {
+      $("gameStatus").textContent = error.message;
+      $("submit").disabled = false;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function nextRound() {
+    try {
+      await callApi("advance");
+      await refresh();
+    } catch (error) {
+      $("gameStatus").textContent = error.message;
+    }
+  }
+
+  async function playAgain() {
+    try {
+      await callApi("restart");
+      await refresh();
+    } catch (error) {
+      $("gameStatus").textContent = error.message;
+    }
+  }
+
+  $("create").addEventListener("click", createGame);
+  $("join").addEventListener("click", joinGame);
+  $("submit").addEventListener("click", submitAnswer);
+  $("answer").addEventListener("keydown", event => {
+    if (event.key === "Enter" && !$("submit").disabled) submitAnswer();
+  });
+  $("nextRound").addEventListener("click", nextRound);
+  $("playAgain").addEventListener("click", playAgain);
+</script>
+</body>
+</html>
