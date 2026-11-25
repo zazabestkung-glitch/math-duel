@@ -15,20 +15,20 @@
       font-family: Arial, sans-serif;
     }
     main {
-      width: min(480px, 92%);
+      width: min(500px, 92%);
       padding: 24px;
       background: white;
       border-radius: 18px;
       box-shadow: 0 8px 30px #0002;
     }
     h1, .center { text-align: center; }
-    input, button {
+    input, select, button {
       box-sizing: border-box;
       padding: 12px;
       border-radius: 10px;
       font: inherit;
     }
-    input { border: 1px solid #bbc4d8; }
+    input, select { border: 1px solid #bbc4d8; }
     button {
       margin: 4px;
       border: 0;
@@ -43,10 +43,15 @@
     .score { padding: 12px; border-radius: 12px; background: #f1f3fa; }
     #question { margin: 24px 0; font-size: 2.8rem; font-weight: bold; }
     #answer { width: 140px; text-align: center; font-size: 1.3rem; }
-    #status, #result { min-height: 28px; text-align: center; }
-    #status.error { color: #b42318; }
+    #status, #gameStatus, #result { min-height: 28px; text-align: center; }
+    #status.error, .error { color: #b42318; }
     #game { display: none; }
     #roomLabel { font-weight: bold; letter-spacing: 2px; }
+    .field { margin: 14px 0; }
+    .field label { display: block; margin-bottom: 7px; font-weight: bold; }
+    #difficultyHelp { color: #59647b; line-height: 1.4; }
+    #timer { font-size: 1.2rem; font-weight: bold; color: #4659e8; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -54,33 +59,59 @@
   <h1>Math Duel</h1>
 
   <section id="lobby">
-    <p class="center">Play the same question on two devices.</p>
-    <p class="center">Your name: <input id="name" maxlength="16" value="Player"></p>
+    <p class="center">Two players, two devices, the same question.</p>
+
+    <div class="field center">
+      <label for="name">Your name</label>
+      <input id="name" maxlength="16" value="Player">
+    </div>
+
+    <div class="field">
+      <label for="difficulty">Host: choose the difficulty</label>
+      <select id="difficulty">
+        <option value="warmup">Warm-up — easier, 60 seconds</option>
+        <option value="grade3" selected>Grade 3 Challenge — recommended, 45 seconds</option>
+        <option value="stretch">Stretch — harder, 30 seconds</option>
+      </select>
+      <p id="difficultyHelp">
+        Add and subtract within 100; multiplication and division facts up to 10.
+      </p>
+    </div>
+
     <div class="row">
       <button id="create">Create a game</button>
     </div>
+
     <p class="center">Or join a game:</p>
     <div class="row">
-      <input id="joinCode" maxlength="6" placeholder="ROOM CODE">
+      <input id="joinCode" maxlength="6" placeholder="ROOM CODE" aria-label="Room code">
       <button id="join">Join</button>
     </div>
-    <p id="lobbyStatus" class="center">First player to 5 points wins.</p>
+
+    <p id="status" class="center">Create a room or enter a room code.</p>
   </section>
 
   <section id="game">
     <p class="center">Room code: <span id="roomLabel"></span></p>
+    <p class="center" id="difficultyLabel"></p>
+
     <div class="scores">
       <div class="score"><span id="p1name"></span>: <strong id="p1score">0</strong></div>
       <div class="score"><span id="p2name"></span>: <strong id="p2score">0</strong></div>
     </div>
+
     <p id="roundLabel" class="center"></p>
     <div id="question" class="center">Waiting…</div>
+    <p id="timer" class="center"></p>
+
     <div class="row">
-      <input id="answer" type="number" placeholder="Answer" disabled>
+      <input id="answer" type="number" step="1" placeholder="Answer" disabled>
       <button id="submit" disabled>Submit</button>
     </div>
+
     <p id="gameStatus" class="center"></p>
     <p id="result" class="center"></p>
+
     <div class="row">
       <button id="nextRound" hidden>Next question</button>
       <button id="playAgain" hidden>Play again</button>
@@ -92,11 +123,18 @@
   const $ = id => document.getElementById(id);
   const API = "/.netlify/functions/game";
 
+  const difficultyNames = {
+    warmup: "Warm-up",
+    grade3: "Grade 3 Challenge",
+    stretch: "Stretch"
+  };
+
   let roomCode = "";
   let token = "";
   let role = "";
   let pollId = null;
   let busy = false;
+  let refreshing = false;
 
   async function callApi(action, extra = {}) {
     const response = await fetch(API, {
@@ -110,19 +148,25 @@
     return data;
   }
 
-  function showLobbyError(error) {
-    $("lobbyStatus").textContent = error.message;
-    $("lobbyStatus").classList.add("error");
-  }
-
   function nameValue(fallback) {
     return $("name").value.trim() || fallback;
   }
 
+  function showLobbyError(error) {
+    $("status").textContent = error.message;
+    $("status").classList.add("error");
+  }
+
   async function createGame() {
     try {
-      $("lobbyStatus").textContent = "Creating room…";
-      const data = await callApi("create", { name: nameValue("Player 1") });
+      $("status").classList.remove("error");
+      $("status").textContent = "Creating room…";
+
+      const data = await callApi("create", {
+        name: nameValue("Player 1"),
+        difficulty: $("difficulty").value
+      });
+
       enterRoom(data);
     } catch (error) {
       showLobbyError(error);
@@ -131,11 +175,14 @@
 
   async function joinGame() {
     try {
-      $("lobbyStatus").textContent = "Joining room…";
+      $("status").classList.remove("error");
+      $("status").textContent = "Joining room…";
+
       const data = await callApi("join", {
         code: $("joinCode").value.trim().toUpperCase(),
         name: nameValue("Player 2")
       });
+
       enterRoom(data);
     } catch (error) {
       showLobbyError(error);
@@ -152,16 +199,20 @@
     $("roomLabel").textContent = roomCode;
 
     refresh();
-    pollId = setInterval(refresh, 1500);
+    pollId = setInterval(refresh, 1000);
   }
 
   async function refresh() {
-    if (busy || !roomCode) return;
+    if (refreshing || !roomCode) return;
+    refreshing = true;
+
     try {
       const state = await callApi("state");
       render(state);
     } catch (error) {
       $("gameStatus").textContent = error.message;
+    } finally {
+      refreshing = false;
     }
   }
 
@@ -170,25 +221,35 @@
     $("p2name").textContent = state.players.p2 || "Waiting";
     $("p1score").textContent = state.displayScores.p1;
     $("p2score").textContent = state.displayScores.p2;
-    $("roundLabel").textContent = state.round ? `Question ${state.roundNumber}` : "";
-    $("question").textContent = state.round?.text || "Waiting for Player 2…";
+    $("difficultyLabel").textContent =
+      `Difficulty: ${difficultyNames[state.difficulty] || state.difficulty}`;
 
     $("nextRound").hidden = true;
     $("playAgain").hidden = true;
     $("result").textContent = "";
 
     if (state.state === "waiting") {
-      $("gameStatus").textContent = "Share the room code with Player 2.";
+      $("roundLabel").textContent = "";
+      $("question").textContent = "Waiting for Player 2…";
+      $("timer").textContent = "";
+      $("gameStatus").textContent = "Share the room code with the other player.";
       $("answer").disabled = true;
       $("submit").disabled = true;
       return;
     }
+
+    $("roundLabel").textContent = `Question ${state.roundNumber}`;
+    $("question").textContent = state.round.text;
+    $("timer").textContent = state.roundResult
+      ? "Time is up or both players have answered."
+      : `Time left: ${state.timeLeft} seconds`;
 
     if (state.roundResult) {
       $("result").textContent =
         `Answer: ${state.round.answer}. ` +
         `${state.players.p1}: ${state.roundResult.p1Correct ? "correct" : "not quite"}; ` +
         `${state.players.p2}: ${state.roundResult.p2Correct ? "correct" : "not quite"}.`;
+
       $("answer").disabled = true;
       $("submit").disabled = true;
 
@@ -198,10 +259,11 @@
           : state.scores.p1 > state.scores.p2
             ? `${state.players.p1} wins!`
             : `${state.players.p2} wins!`;
+
         $("gameStatus").textContent = winner;
         if (role === "p1") $("playAgain").hidden = false;
       } else {
-        $("gameStatus").textContent = "Both players have answered.";
+        $("gameStatus").textContent = "Round complete.";
         if (role === "p1") $("nextRound").hidden = false;
       }
       return;
@@ -221,19 +283,26 @@
       return;
     }
 
+    const value = Number($("answer").value);
+    if (!Number.isInteger(value)) {
+      $("gameStatus").textContent = "Please enter a whole number.";
+      return;
+    }
+
     busy = true;
     $("submit").disabled = true;
 
     try {
-      await callApi("submit", { answer: Number($("answer").value) });
+      await callApi("submit", { answer: value });
       $("answer").value = "";
-      await refresh();
     } catch (error) {
       $("gameStatus").textContent = error.message;
-      $("submit").disabled = false;
     } finally {
       busy = false;
+      $("submit").disabled = false;
     }
+
+    await refresh();
   }
 
   async function nextRound() {
@@ -254,9 +323,20 @@
     }
   }
 
+  $("difficulty").addEventListener("change", () => {
+    const help = {
+      warmup: "Addition and subtraction within 20; easier multiplication and exact division facts.",
+      grade3: "Add and subtract within 100; multiplication and division facts up to 10.",
+      stretch: "Larger addition and subtraction; multiplication and division facts up to 12."
+    };
+    $("difficultyHelp").textContent = help[$("difficulty").value];
+  });
+
   $("create").addEventListener("click", createGame);
   $("join").addEventListener("click", joinGame);
-  $("submit").addEventListener("click", submitAnswer);
+  $("submit").addEventListener("click", () => {
+    if (!busy) submitAnswer();
+  });
   $("answer").addEventListener("keydown", event => {
     if (event.key === "Enter" && !$("submit").disabled) submitAnswer();
   });
